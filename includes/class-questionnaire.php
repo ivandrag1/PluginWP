@@ -73,7 +73,7 @@ class PV_Questionnaire {
 				'forbidden' => __( 'Нямате достъп до този въпросник.', 'platen-vaprosnik' ),
 				'success' => $this->settings->get_setting( 'success_message' ),
 			),
-			'request_error'     => isset( $_GET['pv_error'] ) ? sanitize_text_field( wp_unslash( $_GET['pv_error'] ) ) : '',
+			'request_error'     => $this->get_error_message_from_request(),
 			'form_errors'       => isset( $_GET['pv_errors'] ) ? $this->decode_json_query( wp_unslash( $_GET['pv_errors'] ) ) : array(),
 			'form_old'          => isset( $_GET['pv_old'] ) ? $this->decode_json_query( wp_unslash( $_GET['pv_old'] ) ) : array(),
 			'submitted'         => ! empty( $_GET['pv_submitted'] ),
@@ -93,9 +93,16 @@ class PV_Questionnaire {
 		$page_id   = (int) $this->settings->get_setting( 'questionnaire_page_id', 0 );
 		$redirect  = $page_id ? get_permalink( $page_id ) : home_url( '/' );
 
-		if ( empty( $record ) || 'paid' !== $record['payment_status'] ) {
-			wp_safe_redirect( add_query_arg( 'pv_error', 'forbidden', $redirect ) );
-			exit;
+		if ( empty( $reference ) || empty( $token ) ) {
+			$this->redirect_with_error( 'invalid_request', $redirect );
+		}
+
+		if ( empty( $record ) ) {
+			$this->redirect_with_error( 'forbidden', $redirect );
+		}
+
+		if ( 'paid' !== $record['payment_status'] ) {
+			$this->redirect_with_error( 'payment_pending', $redirect );
 		}
 
 		$questions = $this->normalize_questions( $this->repository->get_questions() );
@@ -131,6 +138,7 @@ class PV_Questionnaire {
 			wp_safe_redirect(
 				add_query_arg(
 						array(
+							'pv_error'  => 'validation_failed',
 							'pv_errors' => wp_json_encode( $errors ),
 							'pv_old'    => wp_json_encode( $old_values ),
 						),
@@ -142,8 +150,7 @@ class PV_Questionnaire {
 
 		$result = $this->repository->save_submission( (int) $record['id'], $name, $email, $phone, $answers );
 		if ( is_wp_error( $result ) ) {
-			wp_safe_redirect( add_query_arg( 'pv_error', $result->get_error_message(), $redirect ) );
-			exit;
+			$this->redirect_with_error( $this->map_wp_error_to_frontend_code( $result ), $redirect );
 		}
 
 		$this->payment_link->clear_access_cookie();
@@ -186,5 +193,52 @@ class PV_Questionnaire {
 	private function decode_json_query( $value ) {
 		$decoded = json_decode( rawurldecode( $value ), true );
 		return is_array( $decoded ) ? $decoded : array();
+	}
+
+	private function get_error_message_from_request() {
+		if ( empty( $_GET['pv_error'] ) ) {
+			return '';
+		}
+
+		$error_code = sanitize_key( wp_unslash( $_GET['pv_error'] ) );
+		$messages   = $this->get_error_messages();
+
+		if ( isset( $messages[ $error_code ] ) ) {
+			return $messages[ $error_code ];
+		}
+
+		return $messages['generic_error'];
+	}
+
+	private function get_error_messages() {
+		return array(
+			'forbidden'         => __( 'Нямате достъп до този въпросник.', 'platen-vaprosnik' ),
+			'already_submitted' => __( 'Този въпросник вече е изпратен.', 'platen-vaprosnik' ),
+			'invalid_request'   => __( 'Невалидна заявка.', 'platen-vaprosnik' ),
+			'payment_pending'   => __( 'Плащането все още не е потвърдено.', 'platen-vaprosnik' ),
+			'validation_failed' => __( 'Моля, поправете отбелязаните грешки.', 'platen-vaprosnik' ),
+			'generic_error'     => __( 'Възникна грешка. Моля, опитайте отново.', 'platen-vaprosnik' ),
+		);
+	}
+
+	private function map_wp_error_to_frontend_code( WP_Error $error ) {
+		$map = array(
+			'pv_already_submitted' => 'already_submitted',
+			'pv_missing_payment'   => 'invalid_request',
+			'pv_submission_failed' => 'generic_error',
+		);
+
+		$error_code = $error->get_error_code();
+		return isset( $map[ $error_code ] ) ? $map[ $error_code ] : 'generic_error';
+	}
+
+	private function redirect_with_error( $error_code, $redirect ) {
+		$allowed_codes = array_keys( $this->get_error_messages() );
+		if ( ! in_array( $error_code, $allowed_codes, true ) ) {
+			$error_code = 'generic_error';
+		}
+
+		wp_safe_redirect( add_query_arg( 'pv_error', $error_code, $redirect ) );
+		exit;
 	}
 }
