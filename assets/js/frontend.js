@@ -20,7 +20,15 @@
 					}
 					if(data.status === 'forbidden'){
 						window.clearInterval(interval);
-						message.textContent = data.message || '';
+						if(message){
+							message.textContent = data.message || '';
+						}
+					}
+				})
+				.catch(function(){
+					if(attempts >= maxAttempts){
+						window.clearInterval(interval);
+						if(timeoutMessage){timeoutMessage.hidden = false;}
 					}
 				});
 
